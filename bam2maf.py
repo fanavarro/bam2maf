@@ -11,7 +11,10 @@ import CigarOperation
 
 # Adapted from https://github.com/Martinsos/edlib/issues/127
 def get_pairwise_seqs(aligned_segment: AlignedSegment):
-    query = aligned_segment.query
+    if aligned_segment.query_name == '29637ad4-097b-4707-994d-9a4ce22c211b':
+        print('stop')
+
+    query = aligned_segment.query_sequence
     ref = aligned_segment.get_reference_sequence()
     cigar_tuples = aligned_segment.cigartuples
     ref_pos = aligned_segment.query_alignment_start
@@ -20,6 +23,7 @@ def get_pairwise_seqs(aligned_segment: AlignedSegment):
     ref_aln = ""
     match_aln = ""
     query_aln = ""
+
     for operation, operation_length in cigar_tuples:
         if operation == CigarOperation.BAM_CEQUAL:
             ref_aln += ref[ref_pos: ref_pos + operation_length]
@@ -46,17 +50,37 @@ def get_pairwise_seqs(aligned_segment: AlignedSegment):
             query_pos += operation_length
             match_aln += "-" * operation_length
         else:
-            pass
+            print(f"Unsupported operation {operation}")
+
+    if len(ref_aln) != len(query_aln):
+        print(aligned_segment.query_name)
+        print(f'{ref_aln}\n{match_aln}\n{query_aln}')
 
     return ref_aln, query_aln, match_aln
+
+
+# Get the number of hard clipping bases at the beginning of the alignment
+def get_starting_hard_clipping_bases(aligned_segment: AlignedSegment) -> int:
+    starting_hard_clipping_bases = 0
+    cigar_tuples = aligned_segment.cigartuples
+    if cigar_tuples is not None and len(cigar_tuples) > 0:
+        first_operation, first_operation_length = cigar_tuples[0]
+        if first_operation == CigarOperation.BAM_CHARD_CLIP:
+            starting_hard_clipping_bases = first_operation_length
+    return starting_hard_clipping_bases
+
+
+# The start of the alignment is calculated as the query_alignment_start provided by pysam object + the number of
+# starting hard clipped bases
+def get_query_alignment_start(aligned_segment: AlignedSegment) -> int:
+    starting_hard_clipping_bases = get_starting_hard_clipping_bases(aligned_segment)
+    return aligned_segment.query_alignment_start + starting_hard_clipping_bases
 
 
 # Receives a sam alignment and return an instance of MultipleSeqAlignment object
 def create_alignment(aligned_segment: AlignedSegment) -> MultipleSeqAlignment:
     if aligned_segment.query_alignment_sequence is None:
         return None
-    else:
-        print(f'{aligned_segment} does not have a sequence')
 
     reference_pairwise, query_pairwise, match_pairwise = get_pairwise_seqs(aligned_segment)
     # First 's' line is the reference
@@ -73,12 +97,13 @@ def create_alignment(aligned_segment: AlignedSegment) -> MultipleSeqAlignment:
                                         'srcSize': reference_length})
 
     # Second 's' line is the aligned read
+    query_alignment_start = get_query_alignment_start(aligned_segment)
     seq_record = SeqRecord(Seq(query_pairwise),
                            id=aligned_segment.query_name,
-                           annotations={'start': aligned_segment.query_alignment_start,
+                           annotations={'start': query_alignment_start,
                                         'size':  aligned_segment.query_length,
                                         'strand': strand,
-                                        'srcSize': len(query_pairwise)})
+                                        'srcSize': aligned_segment.infer_read_length()})
     multiple_seq_alignment = MultipleSeqAlignment([ref_record, seq_record], annotations={"score": 0})
     return multiple_seq_alignment
 
