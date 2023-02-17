@@ -9,15 +9,22 @@ from pysam import AlignedSegment
 import CigarOperation
 
 
-# Adapted from https://github.com/Martinsos/edlib/issues/127
-def get_pairwise_seqs(aligned_segment: AlignedSegment):
-    if aligned_segment.query_name == '29637ad4-097b-4707-994d-9a4ce22c211b':
-        print('stop')
+def get_starting_soft_clipping_bases(aligned_segment: AlignedSegment) -> int:
+    starting_soft_clipping_bases = 0
+    cigar_tuples = aligned_segment.cigartuples
+    if cigar_tuples is not None and len(cigar_tuples) > 0:
+        first_operation, first_operation_length = cigar_tuples[0]
+        if first_operation == CigarOperation.BAM_CSOFT_CLIP:
+            starting_soft_clipping_bases = first_operation_length
+    return starting_soft_clipping_bases
 
+
+# Adapted from https://www.biostars.org/p/9539859/#9539868
+def get_pairwise_seqs(aligned_segment: AlignedSegment):
     query = aligned_segment.query_sequence
     ref = aligned_segment.get_reference_sequence()
     cigar_tuples = aligned_segment.cigartuples
-    ref_pos = aligned_segment.query_alignment_start
+    ref_pos = aligned_segment.query_alignment_start - get_starting_soft_clipping_bases(aligned_segment)
     query_pos = 0
 
     ref_aln = ""
@@ -25,7 +32,7 @@ def get_pairwise_seqs(aligned_segment: AlignedSegment):
     query_aln = ""
 
     for operation, operation_length in cigar_tuples:
-        if operation == CigarOperation.BAM_CEQUAL:
+        if operation == CigarOperation.BAM_CEQUAL or operation == CigarOperation.BAM_CMATCH:
             ref_aln += ref[ref_pos: ref_pos + operation_length]
             ref_pos += operation_length
             query_aln += query[query_pos: query_pos + operation_length]
@@ -49,13 +56,24 @@ def get_pairwise_seqs(aligned_segment: AlignedSegment):
             query_aln += query[query_pos: query_pos + operation_length]
             query_pos += operation_length
             match_aln += "-" * operation_length
+        elif operation == CigarOperation.BAM_CREF_SKIP:
+            ref_aln += ref[ref_pos: ref_pos + operation_length]
+            ref_pos += operation_length
+            query_pos += 0
+            query_aln += '-' * operation_length
+            match_aln += ' ' * operation_length
+        elif operation == CigarOperation.BAM_CHARD_CLIP:
+            pass
+        elif operation == CigarOperation.BAM_CSOFT_CLIP:
+            # query_aln += query[query_pos: query_pos + operation_length]
+            query_pos += operation_length
+            # ref_aln += 'x' * operation_length
+            # match_aln += 's' * operation_length
         else:
             print(f"Unsupported operation {operation}")
 
-    if len(ref_aln) != len(query_aln):
-        print(aligned_segment.query_name)
-        print(f'{ref_aln}\n{match_aln}\n{query_aln}')
-
+    # print(aligned_segment.query_name)
+    # print(f'{ref_aln}\n{match_aln}\n{query_aln}')
     return ref_aln, query_aln, match_aln
 
 
@@ -79,9 +97,6 @@ def get_query_alignment_start(aligned_segment: AlignedSegment) -> int:
 
 # Receives a sam alignment and return an instance of MultipleSeqAlignment object
 def create_alignment(aligned_segment: AlignedSegment) -> MultipleSeqAlignment:
-    if aligned_segment.query_alignment_sequence is None:
-        return None
-
     reference_pairwise, query_pairwise, match_pairwise = get_pairwise_seqs(aligned_segment)
     # First 's' line is the reference
     strand = 1 if aligned_segment.is_forward else -1
@@ -118,11 +133,15 @@ def bam2maf(input_file_path: str, maf_file_path: str):
         maf_writer = MafWriter(maf_file)
         maf_writer.write_header()
         for sam_entry in input_file:
+            if not sam_entry.has_tag('MD'):
+                print(f'could not extract alignment for {sam_entry.query_name} (MD tag not present)')
+                continue
+            if sam_entry.query_sequence is None:
+                print(f'could not extract alignment for {sam_entry.query_name} (query_sequence is none)')
+                continue
             alignment = create_alignment(sam_entry)
-            if alignment is not None:
-                maf_writer.write_alignment(alignment)
-            else:
-                print(f'could not extract alignment from {sam_entry}')
+            maf_writer.write_alignment(alignment)
+
 
 
 if __name__ == '__main__':
